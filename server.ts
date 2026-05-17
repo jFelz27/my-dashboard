@@ -1,6 +1,5 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
@@ -13,6 +12,19 @@ const PORT = 3000;
 app.use(express.json());
 
 export default app;
+
+// Health Check for Deployment Verification
+app.get("/api/health", (req, res) => {
+  res.json({ 
+    status: "ok", 
+    deployment: "Vercel/Production",
+    time: new Date().toISOString(),
+    keys: {
+      polygon: !!process.env.POLYGON_API_KEY,
+      gemini: !!process.env.GEMINI_API_KEY
+    }
+  });
+});
 
 // Diagnostic Logs (Helps verify API keys in Vercel/Cloud Run logs)
 console.log("--- Server Boot Sequence ---");
@@ -202,6 +214,7 @@ async function startServer() {
   if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
     // Vite middleware for development
     if (process.env.NODE_ENV !== "production") {
+      const { createServer: createViteServer } = await import("vite");
       const vite = await createViteServer({
         server: { middlewareMode: true },
         appType: "spa",
