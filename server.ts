@@ -9,29 +9,28 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
+// Required for rate limiting behind Vercel proxy
+app.set('trust proxy', 1);
+
 app.use(express.json());
 
 export default app;
 
 // Health Check for Deployment Verification
 app.get("/api/health", (req, res) => {
+  console.log("Health check pulse - verifying keys");
   res.json({ 
     status: "ok", 
     deployment: "Vercel/Production",
     time: new Date().toISOString(),
     keys: {
       polygon: !!process.env.POLYGON_API_KEY,
-      gemini: !!process.env.GEMINI_API_KEY
+      gemini: !!process.env.GEMINI_API_KEY,
+      marketdata: !!process.env.MARKETDATA_API_KEY
     }
   });
 });
 
-// Diagnostic Logs (Helps verify API keys in Vercel/Cloud Run logs)
-console.log("--- Server Boot Sequence ---");
-console.log("POLYGON_API_KEY configured:", !!process.env.POLYGON_API_KEY);
-console.log("GEMINI_API_KEY configured:", !!process.env.GEMINI_API_KEY);
-console.log("MARKETDATA_API_KEY configured:", !!process.env.MARKETDATA_API_KEY);
-console.log("----------------------------");
 
 // In-memory cache for sentiment analysis
 interface CacheEntry {
@@ -209,17 +208,21 @@ app.post("/api/sentiment", apiLimiter, async (req, res) => {
   }
 });
 
-async function startServer() {
-  // Only start the listener if we are running the script directly (not via Vercel)
-  if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
+// Start server if not running on Vercel
+if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
+  const startServer = async () => {
     // Vite middleware for development
     if (process.env.NODE_ENV !== "production") {
-      const { createServer: createViteServer } = await import("vite");
-      const vite = await createViteServer({
-        server: { middlewareMode: true },
-        appType: "spa",
-      });
-      app.use(vite.middlewares);
+      try {
+        const { createServer: createViteServer } = await import("vite");
+        const vite = await createViteServer({
+          server: { middlewareMode: true },
+          appType: "spa",
+        });
+        app.use(vite.middlewares);
+      } catch (e) {
+        console.error("Vite failed to load:", e);
+      }
     } else {
       const distPath = path.join(process.cwd(), "dist");
       app.use(express.static(distPath));
@@ -231,7 +234,7 @@ async function startServer() {
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });
-  }
+  };
+  
+  startServer();
 }
-
-startServer();
