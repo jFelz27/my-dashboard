@@ -1,10 +1,7 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
-
-dotenv.config();
 
 const app = express();
 const PORT = 3000;
@@ -21,13 +18,17 @@ app.get("/api/health", (req, res) => {
   res.json({ 
     status: "ok", 
     deployment: "Vercel",
-    env: process.env.NODE_ENV,
-    time: new Date().toISOString(),
     keys: {
       polygon: !!process.env.POLYGON_API_KEY,
       gemini: !!process.env.GEMINI_API_KEY
     }
   });
+});
+
+// Global Error Handler
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  console.error("Express Error:", err);
+  res.status(500).json({ error: "Internal Server Error", detail: err.message });
 });
 
 // Proxy for Polygon History
@@ -154,24 +155,3 @@ app.post("/api/sentiment", apiLimiter, async (req, res) => {
 
 // --- EXPORT FOR VERCEL ---
 export default app;
-
-// --- LOCAL SERVER ONLY ---
-if (!process.env.VERCEL) {
-  const startLocalServer = async () => {
-    if (process.env.NODE_ENV !== "production") {
-      try {
-        const { createServer: createViteServer } = await import("vite");
-        const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
-        app.use(vite.middlewares);
-      } catch (e) {
-        console.error("Vite failed:", e);
-      }
-    } else {
-      const distPath = path.join(process.cwd(), "dist");
-      app.use(express.static(distPath));
-      app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
-    }
-    app.listen(PORT, "0.0.0.0", () => console.log(`Local dev server: ${PORT}`));
-  };
-  startLocalServer();
-}
