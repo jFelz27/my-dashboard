@@ -14,39 +14,20 @@ app.set('trust proxy', 1);
 
 app.use(express.json());
 
-export default app;
+// --- ROUTES ---
 
-// Health Check for Deployment Verification
+// Health Check
 app.get("/api/health", (req, res) => {
-  console.log("Health check pulse - verifying keys");
   res.json({ 
     status: "ok", 
-    deployment: "Vercel/Production",
+    deployment: "Vercel",
+    env: process.env.NODE_ENV,
     time: new Date().toISOString(),
     keys: {
       polygon: !!process.env.POLYGON_API_KEY,
-      gemini: !!process.env.GEMINI_API_KEY,
-      marketdata: !!process.env.MARKETDATA_API_KEY
+      gemini: !!process.env.GEMINI_API_KEY
     }
   });
-});
-
-
-// In-memory cache for sentiment analysis
-interface CacheEntry {
-  summary: string;
-  expiry: number;
-}
-const sentimentCache = new Map<string, CacheEntry>();
-const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
-
-// Rate limiter: 10 requests per minute per IP
-const apiLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 10, 
-  message: { error: "Too many requests", message: "10 requests per minute limit reached." },
-  standardHeaders: true,
-  legacyHeaders: false,
 });
 
 // Proxy for Polygon History
@@ -54,9 +35,7 @@ app.get("/api/market/history/:ticker", async (req, res) => {
   const { ticker } = req.params;
   const apiKey = process.env.POLYGON_API_KEY;
 
-  if (!apiKey) {
-    return res.status(500).json({ error: "POLYGON_API_KEY not configured" });
-  }
+  if (!apiKey) return res.status(500).json({ error: "POLYGON_API_KEY not configured" });
 
   try {
     const to = new Date().toISOString().split('T')[0];
@@ -76,9 +55,7 @@ app.get("/api/market/latest/:ticker", async (req, res) => {
   const { ticker } = req.params;
   const apiKey = process.env.POLYGON_API_KEY;
 
-  if (!apiKey) {
-    return res.status(500).json({ error: "POLYGON_API_KEY not configured" });
-  }
+  if (!apiKey) return res.status(500).json({ error: "POLYGON_API_KEY not configured" });
 
   try {
     const response = await fetch(
@@ -95,10 +72,7 @@ app.get("/api/market/latest/:ticker", async (req, res) => {
 app.get("/api/market/options-metadata/:ticker", async (req, res) => {
   const { ticker } = req.params;
   const apiKey = process.env.POLYGON_API_KEY;
-
-  if (!apiKey) {
-    return res.status(500).json({ error: "POLYGON_API_KEY not configured" });
-  }
+  if (!apiKey) return res.status(500).json({ error: "POLYGON_API_KEY not configured" });
 
   try {
     const response = await fetch(
@@ -118,123 +92,86 @@ app.get("/api/market/options-flow/:underlying/:optionTicker", async (req, res) =
   const marketDataKey = process.env.MARKETDATA_API_KEY;
 
   try {
-    // Try MarketData.app first if configured
     if (marketDataKey && marketDataKey.length > 5) {
       const resp = await fetch(`https://api.marketdata.app/v1/options/candles/daily/${optionTicker}/?token=${marketDataKey}`);
       const data = await resp.json();
       if (data.s === 'ok') return res.json({ source: 'marketdata', data });
     }
 
-    // Fallback to Polygon
     if (polygonKey && polygonKey.length > 5) {
       const to = new Date().toISOString().split('T')[0];
       const from = new Date(Date.now() - 730 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-      
       const [aggResp, snapResp] = await Promise.all([
         fetch(`https://api.polygon.io/v2/aggs/ticker/${optionTicker}/range/1/day/${from}/${to}?adjusted=true&sort=asc&limit=1000&apiKey=${polygonKey}`),
         fetch(`https://api.polygon.io/v3/snapshot/options/${underlying}/${optionTicker}?apiKey=${polygonKey}`)
       ]);
-
       const aggData = await aggResp.json();
       const snapData = await snapResp.json();
       return res.json({ source: 'polygon', aggData, snapData });
     }
-
-    res.status(404).json({ error: "No API keys configured for options flow" });
+    res.status(404).json({ error: "No API keys configured" });
   } catch (error) {
-    res.status(500).json({ error: "Failed to fetch options flow" });
+    res.status(500).json({ error: "Failed to fetch flow" });
   }
 });
 
-// API route for Sentiment Analysis using Gemini
+// Sentiment Analysis Cache/Limiter
+interface CacheEntry { summary: string; expiry: number; }
+const sentimentCache = new Map<string, CacheEntry>();
+const CACHE_DURATION = 10 * 60 * 1000;
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { error: "Too many requests" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 app.post("/api/sentiment", apiLimiter, async (req, res) => {
   const { ticker } = req.body;
-  
-  if (!ticker) {
-    return res.status(400).json({ error: "Ticker is required" });
-  }
+  if (!ticker) return res.status(400).json({ error: "Ticker required" });
 
-  // Check Cache First
   const now = Date.now();
   const cached = sentimentCache.get(ticker);
-  if (cached && cached.expiry > now) {
-    console.log(`[Cache Hit] Serving cached sentiment for ${ticker}`);
-    return res.json({ summary: cached.summary, cached: true });
-  }
+  if (cached && cached.expiry > now) return res.json({ summary: cached.summary, cached: true });
 
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server" });
-  }
+  if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY missing" });
 
   try {
-    const genAI = new GoogleGenAI({ 
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        }
-      }
-    });
-    
-    console.log(`[Cache Miss] Fetching new sentiment for ${ticker} from Gemini`);
-    const prompt = `Provide a realistic 4-5 sentence summary of current investor sentiment for the stock $${ticker} based on recent market trends. Focus on AI data center infrastructure trends, GPU capacity, and power availability. Format as a single paragraph. No markdown formatting, just plain text.`;
-    
-    const result = await genAI.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-    });
-    
+    const genAI = new GoogleGenAI({ apiKey });
+    const prompt = `Provide a realistic 4-5 sentence summary of current investor sentiment for the stock $${ticker} based on recent market trends. Focus on AI data center infrastructure trends, GPU capacity, and power availability. Format as a single paragraph. No markdown.`;
+    const result = await genAI.models.generateContent({ model: "gemini-3-flash-preview", contents: prompt });
     const summary = result.text;
-    
-    // Store in cache
-    sentimentCache.set(ticker, {
-      summary,
-      expiry: now + CACHE_DURATION
-    });
-    
+
+    sentimentCache.set(ticker, { summary, expiry: now + CACHE_DURATION });
     res.json({ summary, cached: false });
   } catch (error: any) {
-    console.error("Gemini API Error:", error.message || error);
-    
-    if (error?.status === 429 || error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED')) {
-      return res.status(429).json({ 
-        error: "Quota exceeded", 
-        message: "Gemini API quota reached. Using fallback summary." 
-      });
-    }
-    
-    res.status(500).json({ error: "Failed to fetch sentiment" });
+    res.status(500).json({ error: "Sentiment failed" });
   }
 });
 
-// Start server if not running on Vercel
-if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
-  const startServer = async () => {
-    // Vite middleware for development
+// --- EXPORT FOR VERCEL ---
+export default app;
+
+// --- LOCAL SERVER ONLY ---
+if (!process.env.VERCEL) {
+  const startLocalServer = async () => {
     if (process.env.NODE_ENV !== "production") {
       try {
         const { createServer: createViteServer } = await import("vite");
-        const vite = await createViteServer({
-          server: { middlewareMode: true },
-          appType: "spa",
-        });
+        const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
         app.use(vite.middlewares);
       } catch (e) {
-        console.error("Vite failed to load:", e);
+        console.error("Vite failed:", e);
       }
     } else {
       const distPath = path.join(process.cwd(), "dist");
       app.use(express.static(distPath));
-      app.get("*", (req, res) => {
-        res.sendFile(path.join(distPath, "index.html"));
-      });
+      app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
     }
-
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
+    app.listen(PORT, "0.0.0.0", () => console.log(`Local dev server: ${PORT}`));
   };
-  
-  startServer();
+  startLocalServer();
 }
