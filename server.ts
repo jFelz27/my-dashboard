@@ -8,16 +8,30 @@ const app = express();
 app.set("trust proxy", 1);
 app.use(express.json());
 
+// Helper to mask keys for diagnostics
+const maskKey = (key?: string) => {
+  if (!key) return "MISSING";
+  if (key.length < 8) return "TOO_SHORT";
+  return `${key.substring(0, 4)}...${key.substring(key.length - 4)} (${key.length} chars)`;
+};
+
 // --- PROXY ROUTES ---
+
+// Root API debug
+app.get("/api", (req, res) => {
+  res.json({ message: "Alpha Stock API is online", timestamp: new Date().toISOString() });
+});
 
 // Health Check
 app.get("/api/health", (req, res) => {
   res.json({ 
     status: "ok", 
     deployment: "Vercel",
+    nodeVersion: process.version,
     keys: {
-      polygon: !!process.env.POLYGON_API_KEY,
-      gemini: !!process.env.GEMINI_API_KEY
+      polygon: maskKey(process.env.POLYGON_API_KEY),
+      gemini: maskKey(process.env.GEMINI_API_KEY),
+      marketData: maskKey(process.env.MARKETDATA_API_KEY)
     }
   });
 });
