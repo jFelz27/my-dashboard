@@ -1,0 +1,6 @@
+{
+  "name": "AI Data Center Stock Dashboard",
+  "description": "Interactive real-time monitoring of AI infrastructure stocks including IREN, CIFR, and APLD with sentiment analysis and options flow.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
